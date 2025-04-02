@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -403,18 +404,48 @@ func (c *Conn) stopMoving() {
 	c.moving = false
 }
 
+// Execute a sequence of codes while the caller holds the moving semaphore.
+func (c *Conn) doCodes(codes ...string) error {
+	for _, code := range codes {
+		if err := c.doCode(code); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Home homes the A350 device.
 func (c *Conn) Home(ctx context.Context) error {
 	if err := c.waitToMove(ctx); err != nil {
 		return err
 	}
 	defer c.stopMoving()
+	return c.doCodes("G53", "G28")
+}
 
-	if err := c.doCode("G53"); err != nil {
-		return err
+// SnapJPEG takes a photo (index=0...8) at the specified x,y,z
+// absolute location.
+func (c *Conn) SnapJPEG(ctx context.Context, index int, x, y, z float64) ([]byte, error) {
+	if err := c.waitToMove(ctx); err != nil {
+		return nil, err
 	}
-	if err := c.doCode("G28"); err != nil {
-		return err
+	resp, err := http.Get(fmt.Sprintf("%s/api/request_capture_photo?index=%d&x=%.3f&y=%.3f&z=%.3f&feedRate=3000&photoQuality=31", c.url, index, x, y, z))
+	if err != nil {
+		c.stopMoving()
+		return nil, err
 	}
-	return nil
+	resp.Body.Close()
+	c.stopMoving()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("capture[%d] = %q(%d)", index, resp.Status, resp.StatusCode)
+	}
+	resp, err = http.Get(fmt.Sprintf("%s/api/get_camera_image?index=%d", c.url, index))
+	defer resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("image[%d] = %q(%d)", index, resp.Status, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
