@@ -3,22 +3,40 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
 	"log"
 	"math"
 	"os"
 
+	"zappem.net/pub/graphics/raster"
 	"zappem.net/pub/net/snappy"
 )
 
 var (
 	config = flag.String("config", "snapmaker.config", "config file")
 	home   = flag.Bool("home", false, "home device (required after power on)")
-	photo  = flag.Bool("photo", false, "request a series of photos taken in a circle")
-	zoom   = flag.Bool("zoom", false, "request a series of zoomed photos")
+	fan    = flag.Int("fan", -1, "enable the enclosure fan")
+	led    = flag.Int("led", -1, "enable the led lighting")
+	x      = flag.Float64("x", 192.5, "specify x value for location")
+	y      = flag.Float64("y", 170, "specify y value for location")
+	z      = flag.Float64("z", 113, "specify z value for location")
+	zd     = flag.Float64("zd", 1, "zoom dz delta from --{x,y,z} for --zoom pictures")
+	move   = flag.Bool("move", false, "move to the specified --x --y --z location")
+	spot   = flag.Bool("spot", false, "turn on the spot laser for photo")
+	nospot = flag.Bool("nospot", false, "turn off the spot laser")
+	locate = flag.Bool("locate", false, "display the current coordinates")
+	photo  = flag.Bool("photo", false, "request a single photo at current location")
+	circle = flag.Bool("circle", false, "request a series of photos taken in a circle around --{x,y,z}")
+	zoom   = flag.Bool("zoom", false, "request a series of zoomed (by --zd) photos starting at --{x,y,z}")
+	marks  = flag.Bool("marks", false, "mark all photos with targeting lines")
 )
 
 type Config struct {
@@ -26,8 +44,36 @@ type Config struct {
 	Address string
 }
 
+// markUp overlays some targeting lines on an image.
+func markUp(jp []byte) (draw.Image, error) {
+	buf := bytes.NewBuffer(jp)
+	im, format, err := image.Decode(buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode %q image: %v", format, err)
+	}
+	bb := im.Bounds()
+	w := bb.Max.X - bb.Min.X
+	if h := bb.Max.Y - bb.Min.Y; h < w {
+		w = h
+	}
+	r := .1 * float64(w)
+	pen := raster.NewRasterizer()
+	const delta = 3.0
+	const wide = 2.0
+	raster.LineTo(pen, false, 0, 0, r-delta, r-delta, wide)
+	raster.LineTo(pen, false, 2*r, 2*r, r+delta, r+delta, wide)
+	raster.LineTo(pen, false, 2*r, 0, r+delta, r-delta, wide)
+	raster.LineTo(pen, false, 0, 2*r, r-delta, r+delta, wide)
+	out := image.NewRGBA(bb)
+	draw.Draw(out, bb, im, image.ZP, draw.Src)
+	pen.Render(out, float64(bb.Min.X+bb.Max.X)/2-r, float64(bb.Min.Y+bb.Max.Y)/2-r, color.RGBA{255, 0, 255, 255})
+	return out, nil
+}
+
 func main() {
 	flag.Parse()
+
+	ctx := context.Background()
 
 	data, err := os.ReadFile(*config)
 	if err != nil {
@@ -38,7 +84,7 @@ func main() {
 		log.Fatalf("failed to import %q: %v", *config, err)
 	}
 
-	c, err := snappy.NewConn(conf.Address, conf.Token)
+	c, err := snappy.NewConn(ctx, conf.Address, conf.Token)
 	if err != nil {
 		log.Fatalf("unable to connect to %q: %v", conf.Address, err)
 	}
@@ -54,20 +100,74 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
-
 	if *home {
 		if err := c.Home(ctx); err != nil {
 			log.Fatalf("failed to home device: %v", err)
 		}
 	}
 
+	if *locate {
+		c.Status()
+		x, y, z, ox, oy, oz := c.CurrentLocation()
+		log.Printf("at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
+	}
+
+	if *fan >= 0 && *fan <= 100 {
+		if err := c.EncFan(*fan); err != nil {
+			log.Printf("unable to set enclosure fan to %d: %v", *fan, err)
+		}
+	}
+
+	if *led >= 0 && *led <= 100 {
+		if err := c.EncLED(*led); err != nil {
+			log.Printf("unable to set enclosure LED to %d: %v", *led, err)
+		}
+	}
+
+	if *move {
+		if err := c.MoveTo(ctx, *x, *y, *z); err != nil {
+			log.Fatalf("move to (%.2f,%.2f,%.2f) failed: %v", *x, *y, *z, err)
+		}
+	}
+
+	if *spot {
+		defer c.LaserSpot(ctx, 0)
+		if err := c.LaserSpot(ctx, 1.0); err != nil {
+			log.Fatalf("failed to enable laser spot: %v", err)
+		}
+	}
+
 	if *photo {
+		d, err := c.SnapJPEG(ctx, 0)
+		if err != nil {
+			log.Fatalf("photo grab failed: %v", err)
+		}
+		if *marks {
+			im, err := markUp(d)
+			if err != nil {
+				log.Fatalf("failed to mark up the image: %v", err)
+			}
+			buf := &bytes.Buffer{}
+			if err := jpeg.Encode(buf, im, nil); err != nil {
+				log.Fatalf("failed to encode jpeg: %v", err)
+			}
+			d = buf.Bytes()
+		}
+		if err := os.WriteFile("photo.jpg", d, 0777); err != nil {
+			log.Fatalf("no photo: %v", err)
+		}
+	}
+
+	if *spot || *nospot {
+		c.LaserSpot(ctx, 0)
+	}
+
+	if *circle {
 		for i := 0; i < 9; i++ {
 			theta := float64(i) / 9.0 * 2.0 * math.Pi
 			r := 15.0
 			log.Printf("taking photo %d (at %.2f deg)", i, theta/math.Pi*180)
-			d, err := c.SnapJPEG(ctx, i, 192.5+r*math.Cos(theta), 170+r*math.Sin(theta), 170)
+			d, err := c.SnapAtJPEG(ctx, i, *x+r*math.Cos(theta), *y+r*math.Sin(theta), *z)
 			if err != nil {
 				log.Fatalf("photo grab failed: %v", err)
 			}
@@ -79,9 +179,10 @@ func main() {
 
 	if *zoom {
 		for i := 0; i < 9; i++ {
-			delta := float64(i) * 3.0
-			log.Printf("taking photo %d (at %.2f mm)", i, 170-delta)
-			d, err := c.SnapJPEG(ctx, i, 192.5, 170, 170-delta)
+			delta := float64(i) * *zd
+			height := *z - delta
+			log.Printf("taking photo %d (at %.2f mm)", i, height)
+			d, err := c.SnapAtJPEG(ctx, i, *x, *y, height)
 			if err != nil {
 				log.Fatalf("photo grab failed: %v", err)
 			}

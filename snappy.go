@@ -21,6 +21,7 @@ var (
 	ErrInvalidToken = errors.New("invalid token")
 	ErrNoKey        = errors.New("no key found")
 	ErrCanceled     = errors.New("operation canceled")
+	ErrInvalid      = errors.New("invalid value")
 )
 
 // EnclosureResult holds a response to the enclosure query of the A350
@@ -43,7 +44,7 @@ type ModuleDetail struct {
 
 type ModuleLaser struct {
 	LaserFocalLength float64 `json:"laserFocalLength"`
-	LaserPower       int     `json:"laserPower"`
+	LaserPower       float64 `json:"laserPower"`
 	LaserCamera      bool    `json:"laserCamera"`
 }
 
@@ -169,7 +170,7 @@ type StatusResult struct {
 	OffsetZ             float64         `json:"offsetZ"`
 	ToolHead            string          `json:"toolHead"`
 	LaserFocalLength    float64         `json:"laserFocalLength"`
-	LaserPower          int             `json:"laserPower"`
+	LaserPower          float64         `json:"laserPower"`
 	LaserCamera         bool            `json:"laserCamera"`
 	Laser10WErrorState  int             `json:"laser10WErrorState"`
 	WorkSpeed           int             `json:"workSpeed"`
@@ -212,40 +213,6 @@ type ConnectionResult struct {
 	Series       string `json:"series"`
 	HeadType     int    `json:"headType"`
 	HasEnclosure bool   `json:"hasEnclosure"`
-}
-
-// NewConn confirms a new connection to the A350.
-func NewConn(ip, token string) (*Conn, error) {
-	u := fmt.Sprintf("http://%s:8080", ip)
-	v := url.Values{}
-	v.Set("token", token)
-	resp, err := http.PostForm(u+"/api/v1/connect", v)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed with status=%d (%q)", resp.StatusCode, resp.Status)
-	}
-	j := json.NewDecoder(resp.Body)
-	var res ConnectionResult
-	if err := j.Decode(&res); err != nil {
-		return nil, err
-	}
-	if token != res.Token {
-		return nil, ErrInvalidToken
-	}
-	if res.Series != "Snapmaker 2.0 A350" {
-		return nil, fmt.Errorf("unsupported series %q", res.Series)
-	}
-	return &Conn{
-		url:          u,
-		token:        token,
-		connected:    true,
-		readOnly:     res.ReadOnly,
-		headType:     res.HeadType,
-		hasEnclosure: res.HasEnclosure,
-	}, nil
 }
 
 // Close closes an open connection to the A350.
@@ -342,6 +309,66 @@ func (c *Conn) Status() error {
 	return errTool
 }
 
+func (c *Conn) pollStatus(ctx context.Context) (err error) {
+	once := make(chan struct{})
+	go func() {
+		var done bool
+		for {
+			err2 := c.Status()
+			if !done {
+				err = err2
+				close(once)
+				done = true
+			}
+			if err2 != nil {
+				return
+			}
+			select {
+			case <-time.After(1 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	<-once
+	return
+}
+
+// NewConn confirms a new connection to the A350.
+func NewConn(ctx context.Context, ip, token string) (*Conn, error) {
+	u := fmt.Sprintf("http://%s:8080", ip)
+	v := url.Values{}
+	v.Set("token", token)
+	resp, err := http.PostForm(u+"/api/v1/connect", v)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed with status=%d (%q)", resp.StatusCode, resp.Status)
+	}
+	j := json.NewDecoder(resp.Body)
+	var res ConnectionResult
+	if err := j.Decode(&res); err != nil {
+		return nil, err
+	}
+	if token != res.Token {
+		return nil, ErrInvalidToken
+	}
+	if res.Series != "Snapmaker 2.0 A350" {
+		return nil, fmt.Errorf("unsupported series %q", res.Series)
+	}
+	c := &Conn{
+		url:          u,
+		token:        token,
+		connected:    true,
+		readOnly:     res.ReadOnly,
+		headType:     res.HeadType,
+		hasEnclosure: res.HasEnclosure,
+	}
+	return c, c.pollStatus(ctx)
+}
+
 // Homed indicates that the A350 considers itself homed.
 func (c *Conn) Homed() bool {
 	c.mu.Lock()
@@ -423,9 +450,38 @@ func (c *Conn) Home(ctx context.Context) error {
 	return c.doCodes("G53", "G28")
 }
 
-// SnapJPEG takes a photo (index=0...8) at the specified x,y,z
-// absolute location.
-func (c *Conn) SnapJPEG(ctx context.Context, index int, x, y, z float64) ([]byte, error) {
+// Move to an absolute (x,y,z) location in the current coordinates.
+func (c *Conn) MoveTo(ctx context.Context, x, y, z float64) error {
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	err := c.doCodes(fmt.Sprintf("G0 F1500 X%.2f Y%.2f Z%.2f", x, y, z))
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.toolState.X = x
+	c.toolState.Y = y
+	c.toolState.Z = z
+	c.mu.Unlock()
+	return nil
+}
+
+// LaserSpot sets the current laser power to percent.
+func (c *Conn) LaserSpot(ctx context.Context, power float64) error {
+	if power < 0 || power > 1.5 {
+		return ErrInvalid
+	}
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	return c.doCodes(fmt.Sprintf("M3 P%d S%.2f", int(power), 255*(power/100)))
+}
+
+// SnapAtJPEG takes a photo (index=0...8) at absolute location (x,y,z).
+func (c *Conn) SnapAtJPEG(ctx context.Context, index int, x, y, z float64) ([]byte, error) {
 	if err := c.waitToMove(ctx); err != nil {
 		return nil, err
 	}
@@ -448,4 +504,62 @@ func (c *Conn) SnapJPEG(ctx context.Context, index int, x, y, z float64) ([]byte
 		return nil, fmt.Errorf("image[%d] = %q(%d)", index, resp.Status, resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// SnapJPEG takes a photo (index=0...8) at the current location.
+func (c *Conn) SnapJPEG(ctx context.Context, index int) ([]byte, error) {
+	c.mu.Lock()
+	x, y, z := c.toolState.X, c.toolState.Y, c.toolState.Z
+	c.mu.Unlock()
+	return c.SnapAtJPEG(ctx, index, x, y, z)
+}
+
+// EncFan sets the speed of the enclosure fan to a percent of its
+// rated speed.
+func (c *Conn) EncFan(speed int) error {
+	if speed < 0 || speed > 100 {
+		return ErrInvalid
+	}
+	v := url.Values{}
+	v.Set("token", c.token)
+	v.Set("fan", fmt.Sprint(speed))
+	resp, err := http.PostForm(c.url+"/api/v1/enclosure", v)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to adjust enclosure fan: status=%d (%q)", resp.StatusCode, resp.Status)
+	}
+	return nil
+}
+
+// EncLED sets the speed of the enclosure LED to a percent of its
+// rated speed.
+func (c *Conn) EncLED(led int) error {
+	if led < 0 || led > 100 {
+		return ErrInvalid
+	}
+	v := url.Values{}
+	v.Set("token", c.token)
+	v.Set("led", fmt.Sprint(led))
+	resp, err := http.PostForm(c.url+"/api/v1/enclosure", v)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to adjust enclosure LED: status=%d (%q)", resp.StatusCode, resp.Status)
+	}
+	return nil
+}
+
+// CurrentLocation returns the current coordinates from the most
+// recent Status update.
+func (c *Conn) CurrentLocation() (x, y, z, ox, oy, oz float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	x, y, z = c.toolState.X, c.toolState.Y, c.toolState.Z
+	ox, oy, oz = c.toolState.OffsetX, c.toolState.OffsetY, c.toolState.OffsetZ
+	return
 }
