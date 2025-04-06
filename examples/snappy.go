@@ -60,13 +60,19 @@ func markUp(jp []byte) (draw.Image, error) {
 	pen := raster.NewRasterizer()
 	const delta = 3.0
 	const wide = 2.0
-	raster.LineTo(pen, false, 0, 0, r-delta, r-delta, wide)
-	raster.LineTo(pen, false, 2*r, 2*r, r+delta, r+delta, wide)
-	raster.LineTo(pen, false, 2*r, 0, r+delta, r-delta, wide)
-	raster.LineTo(pen, false, 0, 2*r, r-delta, r+delta, wide)
+	const base = 4.0
+	const mag = 1.08
+	raster.LineTo(pen, false, base+0, base+0, base+r-delta, base+r-delta, wide)
+	raster.LineTo(pen, false, base+2*r, base+2*r, base+r+delta, base+r+delta, wide)
+	raster.LineTo(pen, false, base+2*r, base+0, base+r+delta, base+r-delta, wide)
+	raster.LineTo(pen, false, base+0, base+2*r, base+r-delta, base+r+delta, wide)
+	raster.LineTo(pen, false, base+r-r*mag, base+4*r/3, base+r-r*mag, base+2*r/3, wide/2)
+	raster.LineTo(pen, false, base+r+r*mag, base+4*r/3, base+r+r*mag, base+2*r/3, wide/2)
+	raster.LineTo(pen, false, base+4*r/3, base+r-r*mag, base+2*r/3, base+r-r*mag, wide/2)
+	raster.LineTo(pen, false, base+4*r/3, base+r+r*mag, base+2*r/3, base+r+r*mag, wide/2)
 	out := image.NewRGBA(bb)
 	draw.Draw(out, bb, im, image.ZP, draw.Src)
-	pen.Render(out, float64(bb.Min.X+bb.Max.X)/2-r, float64(bb.Min.Y+bb.Max.Y)/2-r, color.RGBA{255, 0, 255, 255})
+	pen.Render(out, float64(bb.Min.X+bb.Max.X)/2-(r+base), float64(bb.Min.Y+bb.Max.Y)/2-(r+base), color.RGBA{255, 0, 255, 255})
 	return out, nil
 }
 
