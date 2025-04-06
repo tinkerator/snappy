@@ -21,22 +21,27 @@ import (
 )
 
 var (
-	config = flag.String("config", "snapmaker.config", "config file")
-	home   = flag.Bool("home", false, "home device (required after power on)")
-	fan    = flag.Int("fan", -1, "enable the enclosure fan")
-	led    = flag.Int("led", -1, "enable the led lighting")
-	x      = flag.Float64("x", 192.5, "specify x value for location")
-	y      = flag.Float64("y", 170, "specify y value for location")
-	z      = flag.Float64("z", 113, "specify z value for location")
-	zd     = flag.Float64("zd", 1, "zoom dz delta from --{x,y,z} for --zoom pictures")
-	move   = flag.Bool("move", false, "move to the specified --x --y --z location")
-	spot   = flag.Bool("spot", false, "turn on the spot laser for photo")
-	nospot = flag.Bool("nospot", false, "turn off the spot laser")
-	locate = flag.Bool("locate", false, "display the current coordinates")
-	photo  = flag.Bool("photo", false, "request a single photo at current location")
-	circle = flag.Bool("circle", false, "request a series of photos taken in a circle around --{x,y,z}")
-	zoom   = flag.Bool("zoom", false, "request a series of zoomed (by --zd) photos starting at --{x,y,z}")
-	marks  = flag.Bool("marks", false, "mark all photos with targeting lines")
+	config     = flag.String("config", "snapmaker.config", "config file")
+	home       = flag.Bool("home", false, "home device (required after power on)")
+	fan        = flag.Int("fan", -1, "enable the enclosure fan")
+	led        = flag.Int("led", -1, "enable the led lighting")
+	x          = flag.Float64("x", 192.5, "specify x value for location")
+	y          = flag.Float64("y", 170, "specify y value for location")
+	z          = flag.Float64("z", 113, "specify z value for location")
+	zd         = flag.Float64("zd", 1, "zoom dz delta from --{x,y,z} for --zoom pictures")
+	move       = flag.Bool("move", false, "move to the specified --x --y --z location")
+	spot       = flag.Bool("spot", false, "turn on the spot laser for photo")
+	nospot     = flag.Bool("nospot", false, "turn off the spot laser")
+	locate     = flag.Bool("locate", false, "display the current coordinates")
+	photo      = flag.Bool("photo", false, "request a single photo at current location")
+	circle     = flag.Bool("circle", false, "request a series of photos taken in a circle around --{x,y,z}")
+	zoom       = flag.Bool("zoom", false, "request a series of zoomed (by --zd) photos starting at --{x,y,z}")
+	marks      = flag.Bool("marks", false, "mark all photos with targeting lines")
+	setOrigin  = flag.Bool("set-origin", false, "set the workspace origin to the current location")
+	gotoOrigin = flag.Bool("goto-origin", false, "move the tool head to the origin location")
+	nudgeX     = flag.Float64("nudge-x", 0.0, "step this many mm in the X direction")
+	nudgeY     = flag.Float64("nudge-y", 0.0, "step this many mm in the Y direction")
+	nudgeZ     = flag.Float64("nudge-z", 0.0, "step this many mm in the Z direction")
 )
 
 type Config struct {
@@ -112,6 +117,12 @@ func main() {
 		}
 	}
 
+	if *gotoOrigin {
+		if err := c.GoToOrigin(ctx); err != nil {
+			log.Fatalf("failed to go to origin: %v", err)
+		}
+	}
+
 	if *locate {
 		c.Status()
 		x, y, z, ox, oy, oz := c.CurrentLocation()
@@ -130,9 +141,35 @@ func main() {
 		}
 	}
 
+	var dx, dy, dz float64
+	var nudged bool
+	if *nudgeX != 0 {
+		dx = *nudgeX
+		nudged = true
+	}
+	if *nudgeY != 0 {
+		dy = *nudgeY
+		nudged = true
+	}
+	if *nudgeZ != 0 {
+		dz = *nudgeZ
+		nudged = true
+	}
+	if nudged {
+		if err := c.Step(ctx, dx, dy, dz); err != nil {
+			log.Fatalf("nudge (%.2f,%.2f,%.2f) failed: %v", dx, dy, dz, err)
+		}
+	}
+
 	if *move {
 		if err := c.MoveTo(ctx, *x, *y, *z); err != nil {
 			log.Fatalf("move to (%.2f,%.2f,%.2f) failed: %v", *x, *y, *z, err)
+		}
+	}
+
+	if *setOrigin {
+		if err := c.SetOrigin(ctx); err != nil {
+			log.Fatalf("failed to set origin: %v", err)
 		}
 	}
 

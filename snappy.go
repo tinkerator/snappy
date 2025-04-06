@@ -450,6 +450,34 @@ func (c *Conn) Home(ctx context.Context) error {
 	return c.doCodes("G53", "G28")
 }
 
+// SetOrigin sets the work origin of the A350 device. After executing
+// this command, (0,0,0) become the coordinates of the current
+// physical position. The location of the machine origin is visible in
+// the Offset{X,Y,Z} Status variables.
+func (c *Conn) SetOrigin(ctx context.Context) error {
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	return c.doCodes("G92 X0 Y0 Z0")
+}
+
+// GoToOrigin moves the tool to the origin of the workspace.
+func (c *Conn) GoToOrigin(ctx context.Context) error {
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	c.mu.Lock()
+	z := c.toolState.Z
+	c.mu.Unlock()
+	if z < 0 {
+		return c.doCodes("G0 Z0", "G0 X0 Y0")
+	} else {
+		return c.doCodes("G0 X0 Y0", "G0 Z0")
+	}
+}
+
 // Move to an absolute (x,y,z) location in the current coordinates.
 func (c *Conn) MoveTo(ctx context.Context, x, y, z float64) error {
 	if err := c.waitToMove(ctx); err != nil {
@@ -466,6 +494,20 @@ func (c *Conn) MoveTo(ctx context.Context, x, y, z float64) error {
 	c.toolState.Z = z
 	c.mu.Unlock()
 	return nil
+}
+
+// Step moves a relative step from the current location.
+func (c *Conn) Step(ctx context.Context, dx, dy, dz float64) error {
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	err := c.doCodes("G91", fmt.Sprintf("G0 F1500 X%.2f Y%.2f Z%.2f", dx, dy, dz), "G90")
+	if err != nil {
+		return err
+	}
+	c.Status()
+	return err
 }
 
 // LaserSpot sets the current laser power to percent.
