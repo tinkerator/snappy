@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -472,9 +475,9 @@ func (c *Conn) GoToOrigin(ctx context.Context) error {
 	z := c.toolState.Z
 	c.mu.Unlock()
 	if z < 0 {
-		return c.doCodes("G0 Z0", "G0 X0 Y0")
+		return c.doCodes("G0 F1500 Z0", "G0 X0 Y0")
 	} else {
-		return c.doCodes("G0 X0 Y0", "G0 Z0")
+		return c.doCodes("G0 F1500 X0 Y0", "G0 Z0")
 	}
 }
 
@@ -506,6 +509,7 @@ func (c *Conn) Step(ctx context.Context, dx, dy, dz float64) error {
 	if err != nil {
 		return err
 	}
+	// TODO this is not working reliably.
 	c.Status()
 	return err
 }
@@ -604,4 +608,102 @@ func (c *Conn) CurrentLocation() (x, y, z, ox, oy, oz float64) {
 	x, y, z = c.toolState.X, c.toolState.Y, c.toolState.Z
 	ox, oy, oz = c.toolState.OffsetX, c.toolState.OffsetY, c.toolState.OffsetZ
 	return
+}
+
+// RunProgram uploads a program and runs it. It may be subsequently
+// PauseProgram()d and/or StopProgram()d.
+func (c *Conn) RunProgram(name string, data []byte) error {
+	buf := &bytes.Buffer{}
+	wr := multipart.NewWriter(buf)
+
+	part, err := wr.CreateFormField("token")
+	if err != nil {
+		return err
+	}
+	part.Write([]byte(c.token))
+
+	part, err = wr.CreateFormField("type")
+	if err != nil {
+		return err
+	}
+	part.Write([]byte(`Laser`))
+
+	mh := make(textproto.MIMEHeader)
+	mh.Set("Content-Disposition", fmt.Sprintf("form-data; name=\"file\"; filename=%q", filepath.Base(name)))
+	mh.Set("Content-Type", "application/x-netcdf")
+	part, err = wr.CreatePart(mh)
+	if err != nil {
+		return err
+	}
+	part.Write(data)
+	if err = wr.Close(); err != nil {
+		return err
+	}
+
+	resp, err := http.Post(c.url+"/api/v1/prepare_print", "multipart/form-data; boundary="+wr.Boundary(), buf)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to prepare %q: %s", name, resp.Status)
+	}
+
+	v := url.Values{}
+	v.Set("token", c.token)
+	resp, err = http.PostForm(c.url+"/api/v1/start_print", v)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to run program %q: %s", name, resp.Status)
+	}
+	return nil
+}
+
+// PauseProgram pauses (see RestartProgram) the current running program.
+func (c *Conn) PauseProgram() error {
+	v := url.Values{}
+	v.Set("token", c.token)
+	resp, err := http.PostForm(c.url+"/api/v1/pause_print", v)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to pause program: %v", err)
+	}
+	return nil
+}
+
+// ResumeProgram resumes a program from the point of it being Paused.
+func (c *Conn) ResumeProgram() error {
+	v := url.Values{}
+	v.Set("token", c.token)
+	resp, err := http.PostForm(c.url+"/api/v1/resume_print", v)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to resume program: %v", resp.Status)
+	}
+	return nil
+}
+
+// StopProgram terminates the current program job. Care is needed to
+// continue to use the A350 given its ambiguous resulting state.
+func (c *Conn) StopProgram() error {
+	v := url.Values{}
+	v.Set("token", c.token)
+	resp, err := http.PostForm(c.url+"/api/v1/stop_print", v)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unable to stop program: %s", resp.Status)
+	}
+	return nil
 }

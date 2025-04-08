@@ -42,6 +42,11 @@ var (
 	nudgeX     = flag.Float64("nudge-x", 0.0, "step this many mm in the X direction")
 	nudgeY     = flag.Float64("nudge-y", 0.0, "step this many mm in the Y direction")
 	nudgeZ     = flag.Float64("nudge-z", 0.0, "step this many mm in the Z direction")
+	program    = flag.String("program", "", "upload and execute a program")
+	pause      = flag.Bool("pause", false, "pause the executing program")
+	resume     = flag.Bool("resume", false, "resume the executing program")
+	stop       = flag.Bool("stop", false, "stop the executing program")
+	poll       = flag.Bool("poll", false, "poll running program until complete")
 )
 
 type Config struct {
@@ -123,12 +128,6 @@ func main() {
 		}
 	}
 
-	if *locate {
-		c.Status()
-		x, y, z, ox, oy, oz := c.CurrentLocation()
-		log.Printf("at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
-	}
-
 	if *fan >= 0 && *fan <= 100 {
 		if err := c.EncFan(*fan); err != nil {
 			log.Printf("unable to set enclosure fan to %d: %v", *fan, err)
@@ -139,6 +138,50 @@ func main() {
 		if err := c.EncLED(*led); err != nil {
 			log.Printf("unable to set enclosure LED to %d: %v", *led, err)
 		}
+	}
+
+	if *locate {
+		c.Status()
+		x, y, z, ox, oy, oz := c.CurrentLocation()
+		log.Printf("at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
+	}
+
+	if *pause {
+		if err := c.PauseProgram(); err != nil {
+			log.Fatalf("failed to pause: %v", err)
+		}
+		return
+	}
+
+	if *resume {
+		if err := c.ResumeProgram(); err != nil {
+			log.Fatalf("failed to resume: %v", err)
+		}
+		return
+	}
+
+	if *stop {
+		if err := c.StopProgram(); err != nil {
+			log.Fatalf("failed to stop: %v", err)
+		}
+		return
+	}
+
+	if *program != "" {
+		data, err := os.ReadFile(*program)
+		if err != nil {
+			log.Fatalf("unable to read %q: %v", *program, err)
+		}
+		if err := c.RunProgram(*program, data); err != nil {
+			log.Fatalf("failed to upload and run %q: %v", *program, err)
+		}
+		if *poll {
+			log.Println("need to poll for program completion")
+		}
+		return
+	}
+	if *poll {
+		log.Fatalf("need to poll for program completion")
 	}
 
 	var dx, dy, dz float64
@@ -155,13 +198,12 @@ func main() {
 		dz = *nudgeZ
 		nudged = true
 	}
+
 	if nudged {
 		if err := c.Step(ctx, dx, dy, dz); err != nil {
 			log.Fatalf("nudge (%.2f,%.2f,%.2f) failed: %v", dx, dy, dz, err)
 		}
-	}
-
-	if *move {
+	} else if *move {
 		if err := c.MoveTo(ctx, *x, *y, *z); err != nil {
 			log.Fatalf("move to (%.2f,%.2f,%.2f) failed: %v", *x, *y, *z, err)
 		}
