@@ -47,6 +47,7 @@ var (
 	resume     = flag.Bool("resume", false, "resume the executing program")
 	stop       = flag.Bool("stop", false, "stop the executing program")
 	poll       = flag.Bool("poll", false, "poll running program until complete")
+	dump       = flag.Bool("dump", false, "dump the last cached a350 state and exit")
 )
 
 type Config struct {
@@ -105,6 +106,11 @@ func main() {
 		log.Fatalf("unable to connect to %q: %v", conf.Address, err)
 	}
 	defer c.Close()
+
+	if *dump {
+		c.DumpState()
+		return
+	}
 
 	if err := c.Status(); err != nil {
 		log.Fatalf("failed to read status: %v", err)

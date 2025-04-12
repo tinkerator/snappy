@@ -25,6 +25,7 @@ var (
 	ErrNoKey        = errors.New("no key found")
 	ErrCanceled     = errors.New("operation canceled")
 	ErrInvalid      = errors.New("invalid value")
+	ErrNoCamera     = errors.New("no camera")
 )
 
 // EnclosureResult holds a response to the enclosure query of the A350
@@ -51,8 +52,8 @@ type ModuleLaser struct {
 	LaserCamera      bool    `json:"laserCamera"`
 }
 
-func (ml ModuleLaser) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf(`"laserFocalLength":%g,"laserPower":%d,"laserCamera":%v`, ml.LaserFocalLength, ml.LaserPower, ml.LaserCamera)), nil
+func (ml *ModuleLaser) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"laserFocalLength":%g,"laserPower":%g,"laserCamera":%v`, ml.LaserFocalLength, ml.LaserPower, ml.LaserCamera)), nil
 }
 
 type ModuleEnclosure struct {
@@ -64,7 +65,7 @@ type ModuleEnclosure struct {
 	DoorSwitchCount     int  `json:"doorSwitchCount"`
 }
 
-func (me ModuleEnclosure) MarshalJSON() ([]byte, error) {
+func (me *ModuleEnclosure) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"isReady":%v,"led":%d,"fan":%d,"isDoorEnabled":%v,"isEnclosureDoorOpen":%v,"doorSwitchCount":%d`, me.IsReady, me.LED, me.Fan, me.IsDoorEnabled, me.IsEnclosureDoorOpen, me.DoorSwitchCount)), nil
 }
 
@@ -72,7 +73,7 @@ type ModuleEmergencyStop struct {
 	IsEmergencyStopped bool `json:"isEmergencyStopped"`
 }
 
-func (mes ModuleEmergencyStop) MarshalJSON() ([]byte, error) {
+func (mes *ModuleEmergencyStop) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"isEmergencyStopped":%v`, mes.IsEmergencyStopped)), nil
 }
 
@@ -81,7 +82,7 @@ type ModuleQuickSwap struct {
 	QuickSwapType  int `json:"quickSwapType"`
 }
 
-func (mq ModuleQuickSwap) MarshalJSON() ([]byte, error) {
+func (mq *ModuleQuickSwap) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"quickSwapState":%d,"quickSwapType":%d`, mq.QuickSwapState, mq.QuickSwapType)), nil
 }
 
@@ -89,8 +90,16 @@ type ModuleBracingKit struct {
 	BracingKitState int `json:"bracingKitState"`
 }
 
-func (mb ModuleBracingKit) MarshalJSON() ([]byte, error) {
+func (mb *ModuleBracingKit) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"bracingKitState":%d`, mb.BracingKitState)), nil
+}
+
+func (m ModuleDetail) String() string {
+	j, err := m.MarshalJSON()
+	if err != nil {
+		return fmt.Sprintf("error:%v", err)
+	}
+	return string(j)
 }
 
 func (m *ModuleDetail) MarshalJSON() ([]byte, error) {
@@ -528,6 +537,12 @@ func (c *Conn) LaserSpot(ctx context.Context, power float64) error {
 
 // SnapAtJPEG takes a photo (index=0...8) at absolute location (x,y,z).
 func (c *Conn) SnapAtJPEG(ctx context.Context, index int, x, y, z float64) ([]byte, error) {
+	c.mu.Lock()
+	hasCamera := c.toolState.LaserCamera
+	c.mu.Unlock()
+	if !hasCamera {
+		return nil, ErrNoCamera
+	}
 	if err := c.waitToMove(ctx); err != nil {
 		return nil, err
 	}
@@ -608,6 +623,15 @@ func (c *Conn) CurrentLocation() (x, y, z, ox, oy, oz float64) {
 	x, y, z = c.toolState.X, c.toolState.Y, c.toolState.Z
 	ox, oy, oz = c.toolState.OffsetX, c.toolState.OffsetY, c.toolState.OffsetZ
 	return
+}
+
+// DumpState dumps all of the current status to the log.
+func (c *Conn) DumpState() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	log.Printf("encState: %#v", c.encState)
+	log.Printf("modState: %v", c.modState)
+	log.Printf("toolState: %#v", c.toolState)
 }
 
 // RunProgram uploads a program and runs it. It may be subsequently
