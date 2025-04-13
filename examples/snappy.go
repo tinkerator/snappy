@@ -31,6 +31,8 @@ var (
 	zd         = flag.Float64("zd", 1, "zoom dz delta from --{x,y,z} for --zoom pictures")
 	move       = flag.Bool("move", false, "move to the specified --x --y --z location")
 	spot       = flag.Bool("spot", false, "turn on the spot laser for photo")
+	cross      = flag.Bool("cross", false, "turn on the laser cross")
+	nocross    = flag.Bool("nocross", false, "turn off the laser cross")
 	nospot     = flag.Bool("nospot", false, "turn off the spot laser")
 	locate     = flag.Bool("locate", false, "display the current coordinates")
 	photo      = flag.Bool("photo", false, "request a single photo at current location")
@@ -126,6 +128,9 @@ func main() {
 		if err := c.Home(ctx); err != nil {
 			log.Fatalf("failed to home device: %v", err)
 		}
+		if c.EnclosureFanNotRunning() && *fan == 0 {
+			log.Fatal("homed, but should start enclosure fan!")
+		}
 	}
 
 	if *gotoOrigin {
@@ -182,12 +187,25 @@ func main() {
 			log.Fatalf("failed to upload and run %q: %v", *program, err)
 		}
 		if *poll {
-			log.Println("need to poll for program completion")
+			log.Println("[waiting to start]")
+			if err := c.Await(ctx, "RUNNING"); err != nil {
+				log.Fatalf("waiting to start running failed: %v", err)
+			}
+			log.Println("[waiting for idle]")
+			if err := c.Await(ctx, "IDLE"); err != nil {
+				log.Fatalf("waiting for idle failed: %v", err)
+			}
+			log.Println("[system is idle]")
 		}
 		return
 	}
 	if *poll {
-		log.Fatalf("need to poll for program completion")
+		log.Println("[waiting for idle]")
+		if err := c.Await(ctx, "IDLE"); err != nil {
+			log.Fatalf("waiting for idle failed: %v", err)
+		}
+		log.Println("[system is idle]")
+		return
 	}
 
 	var dx, dy, dz float64
@@ -225,6 +243,15 @@ func main() {
 		defer c.LaserSpot(ctx, 0)
 		if err := c.LaserSpot(ctx, 1.0); err != nil {
 			log.Fatalf("failed to enable laser spot: %v", err)
+		}
+	}
+	if *nocross {
+		if err := c.LaserCrossHairs(ctx, false); err != nil {
+			log.Fatalf("laser cross failed to disable: %v", err)
+		}
+	} else if *cross {
+		if err := c.LaserCrossHairs(ctx, true); err != nil {
+			log.Fatalf("laser cross failed to enable: %v", err)
 		}
 	}
 

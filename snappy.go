@@ -413,6 +413,24 @@ func (c *Conn) waitToMove(ctx context.Context) error {
 	}
 }
 
+// Await waits for the tool-status to become status.
+func (c *Conn) Await(ctx context.Context, status string) error {
+	for {
+		c.mu.Lock()
+		st := c.toolState.Status
+		c.mu.Unlock()
+		if st == status {
+			break
+		}
+		select {
+		case <-time.After(1 * time.Second):
+		case <-ctx.Done():
+			return ErrCanceled
+		}
+	}
+	return nil
+}
+
 // doCode executes some G-Code on the device via a POST method.
 func (c *Conn) doCode(codes string) error {
 	c.mu.Lock()
@@ -533,6 +551,19 @@ func (c *Conn) LaserSpot(ctx context.Context, power float64) error {
 	}
 	defer c.stopMoving()
 	return c.doCodes(fmt.Sprintf("M3 P%d S%.2f", int(power), 255*(power/100)))
+}
+
+// LaserCrossHairs sets the cross-hair targeting sight on.
+func (c *Conn) LaserCrossHairs(ctx context.Context, enable bool) error {
+	if err := c.waitToMove(ctx); err != nil {
+		return err
+	}
+	defer c.stopMoving()
+	on := 1
+	if !enable {
+		on = 0
+	}
+	return c.doCodes(fmt.Sprintf("M2002 T3 P%d", on))
 }
 
 // SnapAtJPEG takes a photo (index=0...8) at absolute location (x,y,z).
@@ -730,4 +761,16 @@ func (c *Conn) StopProgram() error {
 		return fmt.Errorf("unable to stop program: %s", resp.Status)
 	}
 	return nil
+}
+
+// EnclosureFanNotRunning indicates that there is an enclosure fan
+// that is not yet running. All other conditions return false.
+func (c *Conn) EnclosureFanNotRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.encState.IsReady {
+		return false
+	}
+	return c.encState.Fan == 0
 }
