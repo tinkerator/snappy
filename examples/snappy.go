@@ -57,6 +57,16 @@ type Config struct {
 	Address string
 }
 
+func grep(data []byte, val string) string {
+	search := []byte(val)
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if bytes.Contains(line, search) {
+			return string(line)
+		}
+	}
+	return "<not found>"
+}
+
 // markUp overlays some targeting lines on an image.
 func markUp(jp []byte) (draw.Image, error) {
 	buf := bytes.NewBuffer(jp)
@@ -111,6 +121,11 @@ func main() {
 
 	if *dump {
 		c.DumpState()
+		id, ok, err := c.ToolHead(1)
+		if err != nil {
+			log.Fatalf("failed to get key=1 detail: %v", err)
+		}
+		log.Printf("toolID=%d(%q) ok=%v", id, snappy.ModuleNames[id], ok)
 		return
 	}
 
@@ -128,7 +143,7 @@ func main() {
 		if err := c.Home(ctx); err != nil {
 			log.Fatalf("failed to home device: %v", err)
 		}
-		if c.EnclosureFanNotRunning() && *fan == 0 {
+		if c.EnclosureFanNotRunning() && *fan <= 0 {
 			log.Fatal("homed, but should start enclosure fan!")
 		}
 	}
@@ -183,6 +198,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("unable to read %q: %v", *program, err)
 		}
+		log.Print(grep(data, ";estimated_time"))
 		if err := c.RunProgram(*program, data); err != nil {
 			log.Fatalf("failed to upload and run %q: %v", *program, err)
 		}

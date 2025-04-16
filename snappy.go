@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,26 @@ var (
 	ErrInvalid      = errors.New("invalid value")
 	ErrNoCamera     = errors.New("no camera")
 )
+
+// Module provides basic status information describing the keyed
+// module.
+type Module struct {
+	Key      int  `json:"key"`
+	ModuleID int  `json:"moduleId"`
+	Status   bool `json:"status"`
+}
+
+var ModuleNames = map[int]string{
+	1:  "standardCNCToolheadForSM2",   // CNC default tool 50W
+	2:  "levelOneLaserToolheadForSM2", // Blue Laser 1.6W
+	23: "2W Laser Module",             // IR Laser 2W
+}
+
+// ModuleListing is used to indicate the operational status of the
+// various devices plugged into the controller.
+type ModuleListing struct {
+	ModuleList []Module `json:"moduleList"`
+}
 
 // EnclosureResult holds a response to the enclosure query of the A350
 // machine.
@@ -94,6 +115,14 @@ func (mb *ModuleBracingKit) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"bracingKitState":%d`, mb.BracingKitState)), nil
 }
 
+type ModuleCNC struct {
+	SpindleSpeed int `json:"spindleSpeed"`
+}
+
+func (mc *ModuleCNC) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"spindleSpeed":%d`, mc.SpindleSpeed)), nil
+}
+
 func (m ModuleDetail) String() string {
 	j, err := m.MarshalJSON()
 	if err != nil {
@@ -158,6 +187,12 @@ func (m *ModuleDetail) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		m.Module = mb
+	case bytes.Contains(val, []byte(`"spindleSpeed":`)):
+		mc := &ModuleCNC{}
+		if err := json.Unmarshal(val, mc); err != nil {
+			return err
+		}
+		m.Module = mc
 	default:
 		log.Printf("TODO learn to unmarshal key=%d ... %s", k, val)
 	}
@@ -202,6 +237,7 @@ type Conn struct {
 	readOnly     bool
 	headType     int
 	hasEnclosure bool
+	modList      ModuleListing
 	encState     EnclosureResult
 	modState     ModResult
 	toolState    StatusResult
@@ -257,6 +293,17 @@ func (c *Conn) encStatus() error {
 	defer resp.Body.Close()
 	dec := json.NewDecoder(resp.Body)
 	return dec.Decode(&c.encState)
+}
+
+// modStatus gets the status of the attached modules.
+func (c *Conn) modListing() error {
+	resp, err := http.Get(fmt.Sprint(c.url, "/api/v1/module_list?token=", c.token))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	return dec.Decode(&c.modList)
 }
 
 // modStatus gets the status of the attached modules.
@@ -325,6 +372,10 @@ func (c *Conn) pollStatus(ctx context.Context) (err error) {
 	once := make(chan struct{})
 	go func() {
 		var done bool
+		if err = c.modListing(); err != nil {
+			close(once)
+			return
+		}
 		for {
 			err2 := c.Status()
 			if !done {
@@ -677,15 +728,26 @@ func (c *Conn) RunProgram(name string, data []byte) error {
 	}
 	part.Write([]byte(c.token))
 
+	ct := "application/octet-stream"
+	content := "Laser"
+	c.mu.Lock()
+	if strings.Contains(c.toolState.ToolHead, "_CNC_") {
+		content = "CNC"
+	} else {
+		// TODO do we need this?
+		ct = "application/x-netcdf"
+	}
+	c.mu.Unlock()
+
 	part, err = wr.CreateFormField("type")
 	if err != nil {
 		return err
 	}
-	part.Write([]byte(`Laser`))
+	part.Write([]byte(content))
 
 	mh := make(textproto.MIMEHeader)
 	mh.Set("Content-Disposition", fmt.Sprintf("form-data; name=\"file\"; filename=%q", filepath.Base(name)))
-	mh.Set("Content-Type", "application/x-netcdf")
+	mh.Set("Content-Type", ct)
 	part, err = wr.CreatePart(mh)
 	if err != nil {
 		return err
@@ -699,8 +761,10 @@ func (c *Conn) RunProgram(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	result, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("prep failed with %s: %v", string(result), err)
 		return fmt.Errorf("unable to prepare %q: %s", name, resp.Status)
 	}
 
@@ -710,8 +774,10 @@ func (c *Conn) RunProgram(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	result, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("run failed with %s: %v", string(result), err)
 		return fmt.Errorf("unable to run program %q: %s", name, resp.Status)
 	}
 	return nil
@@ -773,4 +839,15 @@ func (c *Conn) EnclosureFanNotRunning() bool {
 		return false
 	}
 	return c.encState.Fan == 0
+}
+
+// ToolHead returns the key tool ID and its status value.
+// The main tool head is key=1.
+func (c *Conn) ToolHead(key int) (id int, ok bool, err error) {
+	for _, m := range c.modList.ModuleList {
+		if m.Key == key {
+			return m.ModuleID, m.Status, nil
+		}
+	}
+	return -1, false, ErrNoKey
 }
