@@ -222,6 +222,13 @@ type StatusResult struct {
 	Laser10WErrorState  int             `json:"laser10WErrorState"`
 	WorkSpeed           int             `json:"workSpeed"`
 	PrintStatus         string          `json:"printStatus"`
+	FileName            string          `json:"fileName"`
+	TotalLines          int             `json:"totalLines"`
+	EstimatedTime       float64         `json:"estimatedTime"`
+	CurrentLine         int             `json:"currentLine"`
+	Progress            float64         `json:"progress"`
+	ElapsedTime         int             `json:"elapsedTime"`
+	RemainingTime       int             `json:"remainingTime"`
 	ModuleList          map[string]bool `json:"moduleList"`
 	IsEnclosureDoorOpen bool            `json:"isEnclosureDoorOpen"`
 	DoorSwitchCount     int             `json:"doorSwitchCount"`
