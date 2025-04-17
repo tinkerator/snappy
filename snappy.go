@@ -391,7 +391,8 @@ func (c *Conn) pollStatus(ctx context.Context) (err error) {
 				done = true
 			}
 			if err2 != nil {
-				return
+				log.Fatalf("c.Status returned error: %v", err2)
+				continue
 			}
 			select {
 			case <-time.After(1 * time.Second):
@@ -717,10 +718,33 @@ func (c *Conn) CurrentLocation() (x, y, z, ox, oy, oz float64) {
 // DumpState dumps all of the current status to the log.
 func (c *Conn) DumpState() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	log.Printf("encState: %#v", c.encState)
 	log.Printf("modState: %v", c.modState)
 	log.Printf("toolState: %#v", c.toolState)
+	c.mu.Unlock()
+	ok, status := c.Running()
+	log.Printf("(%v): %s", ok, status)
+}
+
+// Running confirms a program is running returning summary statistics.
+func (c *Conn) Running() (ok bool, result string) {
+	c.mu.Lock()
+	status := c.toolState.Status
+	file := c.toolState.FileName
+	printing := c.toolState.PrintStatus
+	totLines := c.toolState.TotalLines
+	curLines := c.toolState.CurrentLine
+	elapsed := c.toolState.ElapsedTime
+	remaining := c.toolState.RemainingTime
+	c.mu.Unlock()
+	if totLines == 0 {
+		result = "nothing running"
+		return
+	}
+	end := time.Now().Add(time.Duration(remaining) * time.Second)
+	result = fmt.Sprintf("%s %q %s %d/%d (%d%%) %.0v ETA %s", status, file, printing, curLines, totLines, (100*curLines)/totLines, time.Microsecond*time.Duration(1e6*elapsed), end.Format(time.DateTime))
+	ok = printing == "Printing"
+	return
 }
 
 // RunProgram uploads a program and runs it. It may be subsequently
@@ -740,9 +764,6 @@ func (c *Conn) RunProgram(name string, data []byte) error {
 	c.mu.Lock()
 	if strings.Contains(c.toolState.ToolHead, "_CNC_") {
 		content = "CNC"
-	} else {
-		// TODO do we need this?
-		ct = "application/x-netcdf"
 	}
 	c.mu.Unlock()
 

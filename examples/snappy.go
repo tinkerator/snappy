@@ -15,6 +15,9 @@ import (
 	"log"
 	"math"
 	"os"
+	"regexp"
+	"strconv"
+	"time"
 
 	"zappem.net/pub/graphics/raster"
 	"zappem.net/pub/net/snappy"
@@ -30,7 +33,7 @@ var (
 	z          = flag.Float64("z", 113, "specify z value for location")
 	zd         = flag.Float64("zd", 1, "zoom dz delta from --{x,y,z} for --zoom pictures")
 	move       = flag.Bool("move", false, "move to the specified --x --y --z location")
-	spot       = flag.Bool("spot", false, "turn on the spot laser for photo")
+	spot       = flag.Bool("spot", false, "turn on the spot laser")
 	cross      = flag.Bool("cross", false, "turn on the laser cross")
 	nocross    = flag.Bool("nocross", false, "turn off the laser cross")
 	nospot     = flag.Bool("nospot", false, "turn off the spot laser")
@@ -57,14 +60,20 @@ type Config struct {
 	Address string
 }
 
-func grep(data []byte, val string) string {
-	search := []byte(val)
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if bytes.Contains(line, search) {
-			return string(line)
+// grep performs a regexp match in an array of []byte lines.
+// Returns the number of the matching line (starts at 0), the
+// string content of that line or an error.
+func grep(lines [][]byte, val string) (int, string, error) {
+	re, err := regexp.Compile(val)
+	if err != nil {
+		return 0, "", err
+	}
+	for n, line := range lines {
+		if re.Match(line) {
+			return n, string(line), nil
 		}
 	}
-	return "<not found>"
+	return 0, "", fmt.Errorf("%q does not match", val)
 }
 
 // markUp overlays some targeting lines on an image.
@@ -198,28 +207,53 @@ func main() {
 		if err != nil {
 			log.Fatalf("unable to read %q: %v", *program, err)
 		}
-		log.Print(grep(data, ";estimated_time"))
+		lines := bytes.Split(data, []byte("\n"))
+		n, line, err := grep(lines, "^;estimated_time")
+		if err != nil {
+			log.Printf("no estimated time for completion [%d]: %v", n, err)
+		} else if val, err := strconv.ParseFloat(line[20:], 64); err != nil {
+			log.Printf("failed to parse line=%d %q: %v", n, line, err)
+		} else {
+			when := time.Now().Add(time.Microsecond * time.Duration(1e6*val))
+			log.Printf("ETA for completion from file: %s", when.Format(time.DateTime))
+		}
 		if err := c.RunProgram(*program, data); err != nil {
 			log.Fatalf("failed to upload and run %q: %v", *program, err)
 		}
-		if *poll {
-			log.Println("[waiting to start]")
-			if err := c.Await(ctx, "RUNNING"); err != nil {
-				log.Fatalf("waiting to start running failed: %v", err)
-			}
-			log.Println("[waiting for idle]")
-			if err := c.Await(ctx, "IDLE"); err != nil {
-				log.Fatalf("waiting for idle failed: %v", err)
-			}
-			log.Println("[system is idle]")
+		if !*poll {
+			return
 		}
-		return
+		log.Println("[waiting to start]")
+		if err := c.Await(ctx, "RUNNING"); err != nil {
+			log.Fatalf("waiting to start running failed: %v", err)
+		}
 	}
 	if *poll {
 		log.Println("[waiting for idle]")
+		done := make(chan struct{})
+		ready := make(chan struct{})
+		go func() {
+			defer close(ready)
+			for {
+				select {
+				case <-time.After(3 * time.Second):
+					ok, status := c.Running()
+					fmt.Printf("\r%s\033[0K", status)
+					if !ok {
+						fmt.Println()
+						return
+					}
+				case <-done:
+					fmt.Println()
+					return
+				}
+			}
+		}()
 		if err := c.Await(ctx, "IDLE"); err != nil {
 			log.Fatalf("waiting for idle failed: %v", err)
 		}
+		close(done)
+		<-ready
 		log.Println("[system is idle]")
 		return
 	}
@@ -255,12 +289,16 @@ func main() {
 		}
 	}
 
-	if *spot {
-		defer c.LaserSpot(ctx, 0)
+	if *nospot {
+		if err := c.LaserSpot(ctx, 0); err != nil {
+			log.Fatalf("failed to disable laser spot: %v", err)
+		}
+	} else if *spot {
 		if err := c.LaserSpot(ctx, 1.0); err != nil {
 			log.Fatalf("failed to enable laser spot: %v", err)
 		}
 	}
+
 	if *nocross {
 		if err := c.LaserCrossHairs(ctx, false); err != nil {
 			log.Fatalf("laser cross failed to disable: %v", err)
@@ -290,10 +328,6 @@ func main() {
 		if err := os.WriteFile("photo.jpg", d, 0777); err != nil {
 			log.Fatalf("no photo: %v", err)
 		}
-	}
-
-	if *spot || *nospot {
-		c.LaserSpot(ctx, 0)
 	}
 
 	if *circle {
