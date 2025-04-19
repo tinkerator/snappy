@@ -93,7 +93,7 @@ func markUp(jp []byte) (draw.Image, error) {
 	const delta = 3.0
 	const wide = 2.0
 	const base = 4.0
-	const mag = 1.08
+	const mag = 0.75
 	raster.LineTo(pen, false, base+0, base+0, base+r-delta, base+r-delta, wide)
 	raster.LineTo(pen, false, base+2*r, base+2*r, base+r+delta, base+r+delta, wide)
 	raster.LineTo(pen, false, base+2*r, base+0, base+r+delta, base+r-delta, wide)
