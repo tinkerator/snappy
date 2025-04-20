@@ -11,7 +11,7 @@ Snapmaker 2 A350 machine.
 ```
 $ git clone https://github.com/tinkerator/snappy.git
 $ cd snappy
-$ go build examples/snappy
+$ go build examples/snappy.go
 ```
 
 In this directory, follow these instructions to generate your
