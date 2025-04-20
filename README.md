@@ -2,9 +2,9 @@
 
 ## Introduction
 
-With the eventual goal of making Snapmaker operations scriptable, this
-package is intended to provied a Go API for the Snapmaker 2 A350
-machine.
+With the eventual goal of making Snapmaker 2 A350 operations
+scriptable, this package is intended to provied a Go API for the
+Snapmaker 2 A350 machine.
 
 ## Running the example
 
@@ -26,7 +26,7 @@ $ token=$(grep token ~/.config/snapmaker-luban/machine.json|tail -1|cut -d'"' -f
 
 Then try to run the command:
 ```
-$ ./snappy
+$ ./snappy --dump
 ```
 
 For command line options:
@@ -36,9 +36,10 @@ $ ./snappy --help
 
 ## Protocol
 
-The Snapmaker uses a plain URL/FORM API with JSON style return
-values. Learning the command set is via `tcpdump`-ing the exchange
-between Luban and the Snapmaker 2.0 A350 device.
+The Snapmaker uses a plain URL/FORM API with some attachments (for
+running g-code programs) and offers JSON style return values. Learning
+the command set has been via `tcpdump`-ing the exchange between Luban
+and the Snapmaker 2.0 A350 device.
 
 Some `tcpdump` commands to help navigate:
 
@@ -47,7 +48,8 @@ Some `tcpdump` commands to help navigate:
 sudo tcpdump -w snap-$(date +%s).pcap -i eth0 port 8080
 ```
 
-- View all of the text exchange:
+- View all of the text exchange (replace `1743357727` with the
+  timestamp your command above generated):
 ```
 tcpdump -qns 0 -A -r snap-1743357727.pcap | less
 ```
@@ -59,9 +61,8 @@ tcpdump -qns 0 -A -r snap-1743357727.pcap | grep -E '(POST|GET)' | less
 
 ## TODO
 
-Add more functionality. Currently, all the code can do is Home a
-device with the 1.6W laser head installed. Nothing else has been
-tested.
+I have a selection of tool heads, but have only used a few of
+them. Eventually add support for them all.
 
 ## License
 
@@ -72,5 +73,6 @@ The `snappy` package and examples are distributed with the same BSD
 ## Requesting features and reporting bugs
 
 This is a hobby project. No support should be expected. However, if
-you want to suggest a feature, or find a bug, please use the github
-[snappy bug tracker](https://github.com/tinkerator/snappy/issues).
+you want to suggest a feature, or if you find a bug, please use the
+github [snappy bug
+tracker](https://github.com/tinkerator/snappy/issues).
