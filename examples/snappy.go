@@ -15,8 +15,10 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"zappem.net/pub/graphics/raster"
@@ -47,6 +49,7 @@ var (
 	nudgeX     = flag.Float64("nudge-x", 0.0, "step this many mm in the X direction")
 	nudgeY     = flag.Float64("nudge-y", 0.0, "step this many mm in the Y direction")
 	nudgeZ     = flag.Float64("nudge-z", 0.0, "step this many mm in the Z direction")
+	edit       = flag.String("edit", "", "comment out comma separated sets of --program lines, <n> or <n>-<m>")
 	program    = flag.String("program", "", "upload and execute a program")
 	pause      = flag.Bool("pause", false, "pause the executing program")
 	resume     = flag.Bool("resume", false, "resume the executing program")
@@ -202,6 +205,61 @@ func main() {
 		return
 	}
 
+	if *edit != "" {
+		if *program == "" {
+			log.Fatal("--edit requires --program to be defined")
+		}
+		data, err := os.ReadFile(*program)
+		if err != nil {
+			log.Fatalf("unable to read %q: %v", *program, err)
+		}
+		lines := bytes.Split(data, []byte("\n"))
+		for _, sec := range strings.Split(*edit, ",") {
+			nums := strings.Split(sec, "-")
+			if len(nums) > 2 {
+				log.Fatalf("--edit requires <n> or <n>-<m> fields; invalid: %q", sec)
+			}
+			from, err := strconv.Atoi(nums[0])
+			if err != nil {
+				log.Fatalf("failed to parse --edit=..%q..: %v", nums[0])
+			}
+			if from > len(lines) {
+				log.Fatalf("%q is out of bounds for %q (length=%d)", sec, *program, len(lines))
+			}
+			to := from
+			if len(nums) == 2 {
+				to, err = strconv.Atoi(nums[1])
+				if err != nil {
+					if nums[1] != "" {
+						log.Fatalf("failed to parse 2nd number from --edit=..%q..: %v", sec, err)
+					}
+					to = len(lines)
+				}
+				if to < from {
+					log.Fatalf("--edit range is b>=a, not %d", sec)
+				}
+				if to > len(lines) {
+					log.Fatalf("--edit range beyond length of --program %q vs %d", sec, len(lines))
+				}
+			}
+			for i := from - 1; i < to; i++ {
+				line := lines[i]
+				if len(line) == 0 {
+					continue
+				}
+				if bytes.HasPrefix(line, []byte(";")) {
+					continue
+				}
+				lines[i] = append([]byte(";"), lines[i]...)
+			}
+		}
+		replacement := bytes.Join(lines, []byte("\n"))
+		output := fmt.Sprint("edited-", filepath.Base(*program))
+		if err := os.WriteFile(output, replacement, 0666); err != nil {
+			log.Fatalf("failed to write edited program %q: %v", output, err)
+		}
+		return
+	}
 	if *program != "" {
 		data, err := os.ReadFile(*program)
 		if err != nil {
