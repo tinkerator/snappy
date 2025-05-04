@@ -37,10 +37,17 @@ type Module struct {
 	Status   bool `json:"status"`
 }
 
+// ModuleNames names the tool heads indexed by their canonical IDs.
 var ModuleNames = map[int]string{
-	1:  "standardCNCToolheadForSM2",   // CNC default tool 50W
-	2:  "levelOneLaserToolheadForSM2", // Blue Laser 1.6W
-	23: "2W Laser Module",             // IR Laser 2W
+	0:   "??? 1 nozzle 3D printer",     // 3D Print default tool
+	1:   "standardCNCToolheadForSM2",   // CNC default tool 50W
+	2:   "levelOneLaserToolheadForSM2", // Blue Laser 1.6W
+	14:  "levelTwoLaserToolheadForSM2", // Blue Laser 10W
+	15:  "???",                         // CNC high power tool 200W
+	18:  "???Dual",                     // 3D Print dual head tool
+	23:  "2W Laser Module",             // IR Laser 2W
+	519: "Quick Swap Kit",              // quickSwapState?
+	522: "Bracing Kit",                 // bracingKit?
 }
 
 // ModuleListing is used to indicate the operational status of the
@@ -113,6 +120,28 @@ type ModuleBracingKit struct {
 
 func (mb *ModuleBracingKit) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"bracingKitState":%d`, mb.BracingKitState)), nil
+}
+
+type Module3DBasic struct {
+	NozzleTemperature       float64 `json:"nozzleTemperature"`
+	NozzleTargetTemperature float64 `json:"nozzleTargetTemperature"`
+	IsFilamentOut           bool    `json:"isFilamentOut"`
+}
+
+func (m3 *Module3DBasic) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"nozzleTemperature":%g,"nozzleTargetTemperature":%g,"isFilamentOut":%v`, m3.NozzleTemperature, m3.NozzleTargetTemperature, m3.IsFilamentOut)), nil
+}
+
+type Module3DDual struct {
+	NozzleTemperature1       float64 `json:"nozzleTemperature1"`
+	NozzleTargetTemperature1 float64 `json:"nozzleTargetTemperature1"`
+	NozzleTemperature2       float64 `json:"nozzleTemperature2"`
+	NozzleTargetTemperature2 float64 `json:"nozzleTargetTemperature2"`
+	IsFilamentOut            bool    `json:"isFilamentOut"`
+}
+
+func (m3 *Module3DDual) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"nozzleTemperature1":%g,"nozzleTargetTemperature1":%g,"nozzleTemperature2":%g,"nozzleTargetTemperature2":%g,"isFilamentOut":%v`, m3.NozzleTemperature1, m3.NozzleTargetTemperature1, m3.NozzleTemperature2, m3.NozzleTargetTemperature2, m3.IsFilamentOut)), nil
 }
 
 type ModuleCNC struct {
@@ -193,6 +222,18 @@ func (m *ModuleDetail) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		m.Module = mc
+	case bytes.Contains(val, []byte(`"nozzleTargetTemperature":`)):
+		m3 := &Module3DBasic{}
+		if err := json.Unmarshal(val, m3); err != nil {
+			return err
+		}
+		m.Module = m3
+	case bytes.Contains(val, []byte(`"nozzleTargetTemperature2":`)):
+		m3 := &Module3DDual{}
+		if err := json.Unmarshal(val, m3); err != nil {
+			return err
+		}
+		m.Module = m3
 	default:
 		log.Printf("TODO learn to unmarshal key=%d ... %s", k, val)
 	}
@@ -207,31 +248,40 @@ type ModResult struct {
 
 // StatusResult holds a response to the status command.
 type StatusResult struct {
-	Status              string          `json:"status"`
-	X                   float64         `json:"x"`
-	Y                   float64         `json:"y"`
-	Z                   float64         `json:"z"`
-	Homed               bool            `json:"homed"`
-	OffsetX             float64         `json:"offsetX"`
-	OffsetY             float64         `json:"offsetY"`
-	OffsetZ             float64         `json:"offsetZ"`
-	ToolHead            string          `json:"toolHead"`
-	LaserFocalLength    float64         `json:"laserFocalLength"`
-	LaserPower          float64         `json:"laserPower"`
-	LaserCamera         bool            `json:"laserCamera"`
-	Laser10WErrorState  int             `json:"laser10WErrorState"`
-	WorkSpeed           int             `json:"workSpeed"`
-	PrintStatus         string          `json:"printStatus"`
-	FileName            string          `json:"fileName"`
-	TotalLines          int             `json:"totalLines"`
-	EstimatedTime       float64         `json:"estimatedTime"`
-	CurrentLine         int             `json:"currentLine"`
-	Progress            float64         `json:"progress"`
-	ElapsedTime         int             `json:"elapsedTime"`
-	RemainingTime       int             `json:"remainingTime"`
-	ModuleList          map[string]bool `json:"moduleList"`
-	IsEnclosureDoorOpen bool            `json:"isEnclosureDoorOpen"`
-	DoorSwitchCount     int             `json:"doorSwitchCount"`
+	Status                     string          `json:"status"`
+	X                          float64         `json:"x"`
+	Y                          float64         `json:"y"`
+	Z                          float64         `json:"z"`
+	Homed                      bool            `json:"homed"`
+	OffsetX                    float64         `json:"offsetX"`
+	OffsetY                    float64         `json:"offsetY"`
+	OffsetZ                    float64         `json:"offsetZ"`
+	ToolHead                   string          `json:"toolHead"`
+	NozzleTemperature          float64         `json:"nozzleTemperature"`
+	NozzleTargetTemperature    float64         `json:"nozzleTargetTemperature"`
+	NozzleTemperature1         float64         `json:"nozzleTemperature1"`
+	NozzleTargetTemperature1   float64         `json:"nozzleTargetTemperature1"`
+	NozzleTemperature2         float64         `json:"nozzleTemperature2"`
+	NozzleTargetTemperature2   float64         `json:"nozzleTargetTemperature2"`
+	HeatedBedTemperature       float64         `json:"heatedBedTemperature"`
+	HeatedBedTargetTemperature float64         `json:"heatedBedTargetTemperature"`
+	IsFilamentOut              float64         `json:"isFilamentOut"`
+	LaserFocalLength           float64         `json:"laserFocalLength"`
+	LaserPower                 float64         `json:"laserPower"`
+	LaserCamera                bool            `json:"laserCamera"`
+	Laser10WErrorState         int             `json:"laser10WErrorState"`
+	WorkSpeed                  int             `json:"workSpeed"`
+	PrintStatus                string          `json:"printStatus"`
+	FileName                   string          `json:"fileName"`
+	TotalLines                 int             `json:"totalLines"`
+	EstimatedTime              float64         `json:"estimatedTime"`
+	CurrentLine                int             `json:"currentLine"`
+	Progress                   float64         `json:"progress"`
+	ElapsedTime                int             `json:"elapsedTime"`
+	RemainingTime              int             `json:"remainingTime"`
+	ModuleList                 map[string]bool `json:"moduleList"`
+	IsEnclosureDoorOpen        bool            `json:"isEnclosureDoorOpen"`
+	DoorSwitchCount            int             `json:"doorSwitchCount"`
 }
 
 // Conn holds connection status for Snapmaker 2.0 A350.
@@ -375,6 +425,7 @@ func (c *Conn) Status() error {
 	return errTool
 }
 
+// pollStatus monitors the devices.
 func (c *Conn) pollStatus(ctx context.Context) (err error) {
 	once := make(chan struct{})
 	go func() {
@@ -867,6 +918,12 @@ func (c *Conn) EnclosureFanNotRunning() bool {
 		return false
 	}
 	return c.encState.Fan == 0
+}
+
+// ModuleList returns the lists of modules observed at connection
+// time.
+func (c *Conn) ModuleList() ModuleListing {
+	return c.modList
 }
 
 // ToolHead returns the key tool ID and its status value.

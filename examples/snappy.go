@@ -27,6 +27,7 @@ import (
 
 var (
 	config     = flag.String("config", "snapmaker.config", "config file")
+	camOffset  = flag.Bool("set-camera-offset", false, "set camera offset for current tool to --x --y --z and exit")
 	home       = flag.Bool("home", false, "home device (required after power on)")
 	fan        = flag.Int("fan", -1, "enable the enclosure fan")
 	led        = flag.Int("led", -1, "enable the led lighting")
@@ -41,6 +42,7 @@ var (
 	nospot     = flag.Bool("nospot", false, "turn off the spot laser")
 	locate     = flag.Bool("locate", false, "display the current coordinates")
 	photo      = flag.Bool("photo", false, "request a single photo at current location")
+	snapshot   = flag.Bool("snap", false, "request single photo at previously configured --set-camera-offset")
 	circle     = flag.Bool("circle", false, "request a series of photos taken in a circle around --{x,y,z}")
 	zoom       = flag.Bool("zoom", false, "request a series of zoomed (by --zd) photos starting at --{x,y,z}")
 	marks      = flag.Bool("marks", false, "mark all photos with targeting lines")
@@ -58,9 +60,21 @@ var (
 	dump       = flag.Bool("dump", false, "dump the last cached a350 state and exit")
 )
 
+type ToolConfig struct {
+	// CameraDeltaCoords, if set, holds the (dx,dy,dz) tool offset
+	// to take an in-focus centered photo relative to the initial
+	// tool head location. The --snap argument will nudge the head
+	// by this amount, take a photo, and then un-nudge the head by
+	// that same amount.
+	CameraDeltaCoords []float64 `json:"CameraCoordsDelta,omitempty"`
+}
+
+// Config holds the static config for the target printer. See the
+// --config option for overriding its default location.
 type Config struct {
 	Token   string
 	Address string
+	Tools   map[int]ToolConfig
 }
 
 // grep performs a regexp match in an array of []byte lines.
@@ -111,6 +125,21 @@ func markUp(jp []byte) (draw.Image, error) {
 	return out, nil
 }
 
+func processJPEG(d []byte) []byte {
+	if *marks {
+		im, err := markUp(d)
+		if err != nil {
+			log.Fatalf("failed to mark up the image: %v", err)
+		}
+		buf := &bytes.Buffer{}
+		if err := jpeg.Encode(buf, im, nil); err != nil {
+			log.Fatalf("failed to encode jpeg: %v", err)
+		}
+		d = buf.Bytes()
+	}
+	return d
+}
+
 func main() {
 	flag.Parse()
 
@@ -131,13 +160,17 @@ func main() {
 	}
 	defer c.Close()
 
+	toolID, ok, err := c.ToolHead(1)
+	if err != nil {
+		log.Fatalf("failed to get key=1 detail: %v", err)
+	}
+
 	if *dump {
+		ms := c.ModuleList()
+		log.Printf("connected modules: %#v", ms)
 		c.DumpState()
-		id, ok, err := c.ToolHead(1)
-		if err != nil {
-			log.Fatalf("failed to get key=1 detail: %v", err)
-		}
-		log.Printf("toolID=%d(%q) ok=%v", id, snappy.ModuleNames[id], ok)
+		log.Printf("toolID=%d(%q) ok=%v", toolID, snappy.ModuleNames[toolID], ok)
+		log.Printf("tool config: %#v", conf.Tools[toolID])
 		return
 	}
 
@@ -150,7 +183,6 @@ func main() {
 			log.Fatal("device is not homed yet, use --home")
 		}
 	}
-
 	if *home {
 		if err := c.Home(ctx); err != nil {
 			log.Fatalf("failed to home device: %v", err)
@@ -160,21 +192,17 @@ func main() {
 		}
 	}
 
-	if *gotoOrigin {
-		if err := c.GoToOrigin(ctx); err != nil {
-			log.Fatalf("failed to go to origin: %v", err)
-		}
-	}
-
 	if *fan >= 0 && *fan <= 100 {
+		log.Printf("setting enclosure --fan to %d%%", *fan)
 		if err := c.EncFan(*fan); err != nil {
-			log.Printf("unable to set enclosure fan to %d: %v", *fan, err)
+			log.Fatalf("unable to set enclosure fan to %d: %v", *fan, err)
 		}
 	}
 
 	if *led >= 0 && *led <= 100 {
+		log.Printf("setting enclosure --led to %d%%", *led)
 		if err := c.EncLED(*led); err != nil {
-			log.Printf("unable to set enclosure LED to %d: %v", *led, err)
+			log.Fatalf("unable to set enclosure LED to %d: %v", *led, err)
 		}
 	}
 
@@ -182,6 +210,35 @@ func main() {
 		c.Status()
 		x, y, z, ox, oy, oz := c.CurrentLocation()
 		log.Printf("at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
+	}
+
+	if *camOffset {
+		switch toolID {
+		case 2: // TODO support 10W Laser too
+		default:
+			log.Fatalf("toolID=%d(%q) has no supported camera", toolID, snappy.ModuleNames[toolID])
+		}
+		if conf.Tools == nil {
+			conf.Tools = make(map[int]ToolConfig)
+		}
+		tool := conf.Tools[toolID]
+		tool.CameraDeltaCoords = []float64{*x, *y, *z}
+		conf.Tools[toolID] = tool
+		b, err := json.Marshal(conf)
+		if err != nil {
+			log.Fatalf("failed to marshal config: %v", err)
+		}
+		if err := os.WriteFile(*config, b, 0600); err != nil {
+			log.Fatalf("failed to write config %q: %v", *config, err)
+		}
+		log.Printf("--config=%q updated with camera offset for toolID=%d(%q)", *config, toolID, snappy.ModuleNames[toolID])
+		return
+	}
+
+	if *gotoOrigin {
+		if err := c.GoToOrigin(ctx); err != nil {
+			log.Fatalf("failed to go to origin: %v", err)
+		}
 	}
 
 	if *pause {
@@ -292,17 +349,21 @@ func main() {
 		ready := make(chan struct{})
 		go func() {
 			defer close(ready)
+			polled := false
 			for {
 				select {
 				case <-time.After(3 * time.Second):
 					ok, status := c.Running()
 					fmt.Printf("\r%s\033[0K", status)
+					polled = true
 					if !ok {
 						fmt.Println()
 						return
 					}
 				case <-done:
-					fmt.Println()
+					if polled {
+						fmt.Println()
+					}
 					return
 				}
 			}
@@ -367,25 +428,37 @@ func main() {
 		}
 	}
 
+	if *snapshot {
+		tool := conf.Tools[toolID]
+		dXYZ := tool.CameraDeltaCoords
+		if len(tool.CameraDeltaCoords) != 3 {
+			log.Fatalf("tool=%d(%q) camera offset unknown", toolID, snappy.ModuleNames[toolID])
+		}
+		cx, cy, cz, _, _, _ := c.CurrentLocation()
+		d, err := c.SnapAtJPEG(ctx, 0, cx+dXYZ[0], cy+dXYZ[1], cz+dXYZ[2])
+		if err != nil {
+			log.Fatalf("--snap failed at (%g,%g,%g): %v", cx+dXYZ[0], cy+dXYZ[1], cz+dXYZ[2], err)
+		}
+		d = processJPEG(d)
+		if err := os.WriteFile("photo.jpg", d, 0777); err != nil {
+			log.Fatalf("no --snap photo: %v", err)
+		}
+		if err := c.MoveTo(ctx, cx, cy, cz); err != nil {
+			log.Fatalf("return to (%.2f,%.2f,%.2f) failed: %v", cx, cy, cz, err)
+		}
+		return
+	}
+
 	if *photo {
 		d, err := c.SnapJPEG(ctx, 0)
 		if err != nil {
 			log.Fatalf("photo grab failed: %v", err)
 		}
-		if *marks {
-			im, err := markUp(d)
-			if err != nil {
-				log.Fatalf("failed to mark up the image: %v", err)
-			}
-			buf := &bytes.Buffer{}
-			if err := jpeg.Encode(buf, im, nil); err != nil {
-				log.Fatalf("failed to encode jpeg: %v", err)
-			}
-			d = buf.Bytes()
-		}
+		d = processJPEG(d)
 		if err := os.WriteFile("photo.jpg", d, 0777); err != nil {
 			log.Fatalf("no photo: %v", err)
 		}
+		return
 	}
 
 	if *circle {
@@ -401,6 +474,7 @@ func main() {
 				log.Fatalf("no photo: %v", err)
 			}
 		}
+		return
 	}
 
 	if *zoom {
@@ -416,5 +490,6 @@ func main() {
 				log.Fatalf("no photo: %v", err)
 			}
 		}
+		return
 	}
 }
