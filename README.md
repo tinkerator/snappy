@@ -3,7 +3,7 @@
 ## Introduction
 
 With the eventual goal of making Snapmaker 2 A350 operations
-scriptable, this package is intended to provied a Go API for the
+scriptable, this package is intended to provide a Go API for the
 Snapmaker 2 A350 machine.
 
 ## Running the example
@@ -33,6 +33,9 @@ For command line options:
 ```
 $ ./snappy --help
 ```
+
+Further details of this tool can be found in the
+[`examples/`](examples/) directory.
 
 ## Protocol
 

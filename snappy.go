@@ -417,15 +417,42 @@ func (c *Conn) Status() error {
 	wg.Wait()
 
 	if errEnc != nil {
-		return errEnc
+		return fmt.Errorf("enc: %v", errEnc)
 	}
 	if errMod != nil {
-		return errMod
+		return fmt.Errorf("mod: %v", errMod)
 	}
-	return errTool
+	if errTool != nil {
+		return fmt.Errorf("tool: %v", errTool)
+	}
+
+	return nil
 }
 
-// pollStatus monitors the devices.
+// waitForStatus waits until a successful status has been returned, or
+// ctx is canceled (ErrCanceled). It retries with exponential backoff
+// until it terminally polls once every 20 seconds.
+func (c *Conn) waitForStatus(ctx context.Context) error {
+	duration := time.Duration(250 * time.Millisecond)
+	for {
+		if err := c.Status(); err == nil {
+			return nil
+		}
+		select {
+		case <-time.After(duration):
+			duration *= 2
+			if duration > 20*time.Second {
+				duration = 20 * time.Second
+			}
+		case <-ctx.Done():
+			return ErrCanceled
+		}
+	}
+}
+
+// pollStatus monitors the devices. It returns after one successful
+// status request has been made, but keeps polling after that roughly
+// once per second.
 func (c *Conn) pollStatus(ctx context.Context) (err error) {
 	once := make(chan struct{})
 	go func() {
@@ -435,15 +462,10 @@ func (c *Conn) pollStatus(ctx context.Context) (err error) {
 			return
 		}
 		for {
-			err2 := c.Status()
+			c.waitForStatus(ctx)
 			if !done {
-				err = err2
 				close(once)
 				done = true
-			}
-			if err2 != nil {
-				log.Fatalf("c.Status returned error: %v", err2)
-				continue
 			}
 			select {
 			case <-time.After(1 * time.Second):
@@ -646,8 +668,7 @@ func (c *Conn) Step(ctx context.Context, dx, dy, dz float64) error {
 	if err != nil {
 		return err
 	}
-	// TODO this is not working reliably.
-	c.Status()
+	c.waitForStatus(ctx)
 	return err
 }
 
