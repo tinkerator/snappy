@@ -171,7 +171,7 @@ example, when working with a double sided PCB.
 ### The 10W blue laser tool head
 
 - Tool reports as: `?`
-- File format (.cnc): `?`
+- File format (.nc): `levelTwoLaserToolheadForSM2`
 - Has camera: Yes
 
 TODO
@@ -179,7 +179,7 @@ TODO
 ### The 2W IR laser tool head
 
 - Tool reports as: `?`
-- File format (.cnc): `?`
+- File format (.nc): `?`
 - Has camera: No
 
 TODO

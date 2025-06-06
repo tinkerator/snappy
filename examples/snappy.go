@@ -53,6 +53,7 @@ var (
 	nudgeZ     = flag.Float64("nudge-z", 0.0, "step this many mm in the Z direction")
 	edit       = flag.String("edit", "", "comment out comma separated sets of --program lines, <n> or <n>-<m>")
 	program    = flag.String("program", "", "upload and execute a program")
+	park       = flag.Bool("park", false, "park the head for changing and exit")
 	pause      = flag.Bool("pause", false, "pause the executing program")
 	resume     = flag.Bool("resume", false, "resume the executing program")
 	stop       = flag.Bool("stop", false, "stop the executing program")
@@ -206,9 +207,23 @@ func main() {
 		}
 	}
 
-	if *locate {
+	if *locate || *park {
 		c.Status()
 		x, y, z, ox, oy, oz := c.CurrentLocation()
+		if *park {
+			const tx = -160
+			const ty = -310
+			const tz = -200
+			x, y, z = ox-tx, oy-ty, oz-tz
+			if z < 0 {
+				log.Fatalf("use --nudge-{x,y,z} instead --park would set negative z=%.2f", z)
+			}
+			log.Printf("parking at (%.2f,%.2f,%.2f)", x, y, z)
+			if err := c.MoveTo(ctx, x, y, z); err != nil {
+				log.Fatalf("park at (%.2f,%.2f,%.2f) failed: %v", x, y, z, err)
+			}
+			return
+		}
 		log.Printf("at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
 	}
 
@@ -403,9 +418,18 @@ func main() {
 	}
 
 	if *setOrigin {
+		c.Status()
+		x, y, z, ox, oy, oz := c.CurrentLocation()
+		log.Printf("was at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
 		if err := c.SetOrigin(ctx); err != nil {
 			log.Fatalf("failed to set origin: %v", err)
 		}
+		if err := c.Await(ctx, "IDLE"); err != nil {
+			log.Fatalf("waiting for idle failed: %v", err)
+		}
+		c.Status()
+		x, y, z, ox, oy, oz = c.CurrentLocation()
+		log.Printf("now at (%.2f,%.2f,%.2f) offset=(%.2f,%.2f,%.2f)", x, y, z, ox, oy, oz)
 	}
 
 	if *nospot {
