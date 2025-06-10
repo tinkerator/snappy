@@ -211,9 +211,9 @@ func main() {
 		c.Status()
 		x, y, z, ox, oy, oz := c.CurrentLocation()
 		if *park {
-			const tx = -160
-			const ty = -310
-			const tz = -200
+			const tx = -179
+			const ty = -327
+			const tz = -156.5
 			x, y, z = ox-tx, oy-ty, oz-tz
 			if z < 0 {
 				log.Fatalf("use --nudge-{x,y,z} instead --park would set negative z=%.2f", z)

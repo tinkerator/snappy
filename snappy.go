@@ -38,12 +38,13 @@ type Module struct {
 }
 
 // ModuleNames names the tool heads indexed by their canonical IDs.
+// These names are used in the *nc files for driving these tools.
 var ModuleNames = map[int]string{
 	0:   "??? 1 nozzle 3D printer",     // 3D Print default tool
 	1:   "standardCNCToolheadForSM2",   // CNC default tool 50W
 	2:   "levelOneLaserToolheadForSM2", // Blue Laser 1.6W
 	14:  "levelTwoLaserToolheadForSM2", // Blue Laser 10W
-	15:  "???",                         // CNC high power tool 200W
+	15:  "??? 200W CNC",                // CNC high power tool 200W
 	18:  "???Dual",                     // 3D Print dual head tool
 	23:  "2W Laser Module",             // IR Laser 2W
 	519: "Quick Swap Kit",              // quickSwapState?
@@ -435,9 +436,11 @@ func (c *Conn) Status() error {
 func (c *Conn) waitForStatus(ctx context.Context) error {
 	duration := time.Duration(250 * time.Millisecond)
 	for {
-		if err := c.Status(); err == nil {
+		err := c.Status()
+		if err == nil {
 			return nil
 		}
+		log.Printf("no status: %v (is tool head installed?)", err)
 		select {
 		case <-time.After(duration):
 			duration *= 2
